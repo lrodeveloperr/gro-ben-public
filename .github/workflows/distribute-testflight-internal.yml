@@ -219,6 +219,22 @@ jobs:
           # assigned to an internal group.
           tester_id = users.first.fetch("id")
 
+          group_builds = api_request(
+            :get,
+            "/v1/betaGroups/#{group_id}/relationships/builds",
+          ).fetch("data", [])
+          unless group_builds.any? { |item| item["id"] == build_id }
+            api_request(
+              :post,
+              "/v1/betaGroups/#{group_id}/relationships/builds",
+              body: { data: [{ type: "builds", id: build_id }] },
+              allowed: [204],
+            )
+            group_builds = api_request(
+              :get,
+              "/v1/betaGroups/#{group_id}/relationships/builds",
+            ).fetch("data", [])
+          end
           group_testers = api_request(
             :get,
             "/v1/betaGroups/#{group_id}/relationships/betaTesters",
@@ -236,22 +252,6 @@ jobs:
             ).fetch("data", [])
           end
 
-          group_builds = api_request(
-            :get,
-            "/v1/betaGroups/#{group_id}/relationships/builds",
-          ).fetch("data", [])
-          unless group_builds.any? { |item| item["id"] == build_id }
-            api_request(
-              :post,
-              "/v1/betaGroups/#{group_id}/relationships/builds",
-              body: { data: [{ type: "builds", id: build_id }] },
-              allowed: [204],
-            )
-            group_builds = api_request(
-              :get,
-              "/v1/betaGroups/#{group_id}/relationships/builds",
-            ).fetch("data", [])
-          end
           abort "Build relationship verification failed." unless group_builds.any? { |item| item["id"] == build_id }
           abort "Tester relationship verification failed." unless group_testers.any? { |item| item["id"] == tester_id }
 
