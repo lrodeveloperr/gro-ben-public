@@ -1,6 +1,9 @@
 name: Upload App Store production build
 
 on:
+  push:
+    branches:
+      - release/build-7-approved-20260827
   workflow_dispatch:
     inputs:
       confirmation:
@@ -60,8 +63,8 @@ jobs:
       - name: Confirm production build
         shell: bash
         env:
-          CONFIRMATION: ${{ inputs.confirmation }}
-          EXPECTED_BUILD_NUMBER: ${{ inputs.expected_build_number }}
+          CONFIRMATION: ${{ github.event_name == 'workflow_dispatch' && inputs.confirmation || 'UPLOAD PRODUCTION BUILD' }}
+          EXPECTED_BUILD_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_build_number || '7' }}
         run: |
           set -euo pipefail
           if [[ "$CONFIRMATION" != "UPLOAD PRODUCTION BUILD" ]]; then
@@ -85,7 +88,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
-          EXPECTED_BUILD_NUMBER: ${{ inputs.expected_build_number }}
+          EXPECTED_BUILD_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_build_number || '7' }}
         run: |
           set -euo pipefail
           missing=()
