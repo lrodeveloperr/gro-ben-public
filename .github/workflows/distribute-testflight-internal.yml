@@ -172,6 +172,18 @@ jobs:
           end
           abort "The confirmed recipient is not an App Store Connect team user, so internal TestFlight cannot be enabled safely." if users.empty?
           user_attributes = users.first.fetch("attributes", {})
+          user_id = users.first.fetch("id")
+          visible_apps = api_request(
+            :get,
+            query_path("/v1/users/#{user_id}/visibleApps", { "limit" => "200" }),
+          ).fetch("data", [])
+          role_names = Array(user_attributes["roles"])
+          eligible_roles = %w[ACCOUNT_HOLDER ADMIN APP_MANAGER DEVELOPER MARKETING]
+          role_eligible = (role_names & eligible_roles).any?
+          app_visible = user_attributes["allAppsVisible"] == true ||
+            visible_apps.any? { |item| item["id"] == APP_ID }
+          puts "Internal tester eligibility: role=#{role_eligible ? "eligible" : "ineligible"}, app_access=#{app_visible ? "eligible" : "ineligible"}."
+          abort "The confirmed team user is not eligible for this app's internal TestFlight group." unless role_eligible && app_visible
 
           groups = api_request(
             :get,
