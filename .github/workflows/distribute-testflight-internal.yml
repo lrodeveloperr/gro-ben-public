@@ -1,0 +1,273 @@
+name: Distribute approved build to internal TestFlight
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/distribute-testflight-internal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grocery-ios-testflight-internal
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    name: Make build 7 available to confirmed internal tester
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: app-store-internal
+    env:
+      APP_STORE_ID: "6799562282"
+      BUILD_NUMBER: "7"
+      INTERNAL_GROUP_NAME: "Grocery iOS Internal Testers"
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      TESTFLIGHT_TESTER_EMAIL: ${{ secrets.TESTFLIGHT_TESTER_EMAIL }}
+
+    steps:
+      - name: Validate protected TestFlight inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY TESTFLIGHT_TESTER_EMAIL; do
+            [[ -n "${!key:-}" ]] || { echo "Missing protected $key input." >&2; exit 1; }
+          done
+          echo "::add-mask::$TESTFLIGHT_TESTER_EMAIL"
+
+      - name: Add build 7 to internal TestFlight and invite confirmed tester
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          export ASC_KEY_PATH="$key_path"
+
+          ruby <<'RUBY'
+          require "base64"
+          require "json"
+          require "net/http"
+          require "openssl"
+          require "uri"
+
+          APP_ID = ENV.fetch("APP_STORE_ID")
+          BUILD_NUMBER = ENV.fetch("BUILD_NUMBER")
+          GROUP_NAME = ENV.fetch("INTERNAL_GROUP_NAME")
+          TESTER_EMAIL = ENV.fetch("TESTFLIGHT_TESTER_EMAIL").strip
+          KEY_ID = ENV.fetch("ASC_KEY_ID")
+          ISSUER_ID = ENV.fetch("ASC_ISSUER_ID")
+          KEY_PATH = ENV.fetch("ASC_KEY_PATH")
+
+          abort "Tester email is malformed." unless TESTER_EMAIL.match?(/\A[^@\s]+@[^@\s]+\.[^@\s]+\z/)
+
+          def base64url(value)
+            Base64.urlsafe_encode64(value, padding: false)
+          end
+
+          issued_at = Time.now.to_i
+          header = { alg: "ES256", kid: KEY_ID, typ: "JWT" }
+          payload = {
+            iss: ISSUER_ID,
+            iat: issued_at,
+            exp: issued_at + 1_200,
+            aud: "appstoreconnect-v1",
+          }
+          signing_input = [header, payload]
+            .map { |value| base64url(JSON.generate(value)) }
+            .join(".")
+          private_key = OpenSSL::PKey.read(File.binread(KEY_PATH))
+          der_signature = private_key.sign(OpenSSL::Digest::SHA256.new, signing_input)
+          components = OpenSSL::ASN1.decode(der_signature).value
+          raw_signature = components.map do |component|
+            hex = component.value.to_i.to_s(16)
+            [hex.rjust(64, "0")].pack("H*")
+          end.join
+          JWT = "#{signing_input}.#{base64url(raw_signature)}"
+
+          def query_path(path, params)
+            uri = URI(path)
+            uri.query = URI.encode_www_form(params)
+            uri.to_s
+          end
+
+          def api_request(method, path, body: nil, allowed: [200])
+            uri = URI("https://api.appstoreconnect.apple.com#{path}")
+            request_class = {
+              get: Net::HTTP::Get,
+              post: Net::HTTP::Post,
+              patch: Net::HTTP::Patch,
+            }.fetch(method)
+            request = request_class.new(uri)
+            request["Authorization"] = "Bearer #{JWT}"
+            request["Accept"] = "application/json"
+            if body
+              request["Content-Type"] = "application/json"
+              request.body = JSON.generate(body)
+            end
+            response = Net::HTTP.start(
+              uri.host,
+              uri.port,
+              use_ssl: true,
+              open_timeout: 15,
+              read_timeout: 45,
+            ) { |http| http.request(request) }
+            unless allowed.include?(response.code.to_i)
+              detail = begin
+                parsed = JSON.parse(response.body.to_s)
+                parsed.fetch("errors", []).map do |error|
+                  [error["code"], error["title"], error["detail"]].compact.join(": ")
+                end.join(" | ")
+              rescue JSON::ParserError
+                "Apple returned a non-JSON error."
+              end
+              abort "App Store Connect #{method.upcase} #{uri.path} failed (HTTP #{response.code}): #{detail.byteslice(0, 700)}"
+            end
+            return {} if response.body.to_s.strip.empty?
+            JSON.parse(response.body)
+          end
+
+          build = nil
+          60.times do |attempt|
+            builds = api_request(
+              :get,
+              query_path(
+                "/v1/builds",
+                {
+                  "filter[app]" => APP_ID,
+                  "filter[version]" => BUILD_NUMBER,
+                  "limit" => "10",
+                },
+              ),
+            ).fetch("data", [])
+            abort "Uploaded build #{BUILD_NUMBER} is not visible in App Store Connect." if builds.empty? && attempt >= 9
+            unless builds.empty?
+              candidate = builds.max_by { |item| item.dig("attributes", "uploadedDate").to_s }
+              state = candidate.dig("attributes", "processingState")
+              abort "Build #{BUILD_NUMBER} failed Apple processing." if state == "INVALID"
+              if state == "VALID"
+                build = candidate
+                break
+              end
+            end
+            puts "Build #{BUILD_NUMBER} is still processing; waiting 30 seconds."
+            sleep 30
+          end
+          abort "Build #{BUILD_NUMBER} did not finish processing within 30 minutes." unless build
+          build_id = build.fetch("id")
+
+          users = api_request(
+            :get,
+            query_path("/v1/users", { "filter[email]" => TESTER_EMAIL, "limit" => "10" }),
+          ).fetch("data", [])
+          abort "The confirmed recipient is not an App Store Connect team user, so internal TestFlight cannot be enabled safely." if users.empty?
+          user_attributes = users.first.fetch("attributes", {})
+
+          groups = api_request(
+            :get,
+            query_path("/v1/betaGroups", { "filter[app]" => APP_ID, "limit" => "200" }),
+          ).fetch("data", [])
+          internal_groups = groups.select { |group| group.dig("attributes", "isInternalGroup") == true }
+          group = internal_groups.find { |item| item.dig("attributes", "name") == GROUP_NAME } || internal_groups.first
+
+          unless group
+            group = api_request(
+              :post,
+              "/v1/betaGroups",
+              body: {
+                data: {
+                  type: "betaGroups",
+                  attributes: {
+                    name: GROUP_NAME,
+                    isInternalGroup: true,
+                  },
+                  relationships: {
+                    app: { data: { type: "apps", id: APP_ID } },
+                  },
+                },
+              },
+              allowed: [201],
+            ).fetch("data")
+          end
+          group_id = group.fetch("id")
+
+          testers = api_request(
+            :get,
+            query_path("/v1/betaTesters", { "filter[email]" => TESTER_EMAIL, "limit" => "10" }),
+          ).fetch("data", [])
+          tester = testers.first
+
+          unless tester
+            attributes = { email: TESTER_EMAIL }
+            first_name = user_attributes["firstName"].to_s.strip
+            last_name = user_attributes["lastName"].to_s.strip
+            attributes[:firstName] = first_name unless first_name.empty?
+            attributes[:lastName] = last_name unless last_name.empty?
+            tester = api_request(
+              :post,
+              "/v1/betaTesters",
+              body: {
+                data: {
+                  type: "betaTesters",
+                  attributes: attributes,
+                  relationships: {
+                    betaGroups: {
+                      data: [{ type: "betaGroups", id: group_id }],
+                    },
+                  },
+                },
+              },
+              allowed: [201],
+            ).fetch("data")
+          end
+          tester_id = tester.fetch("id")
+
+          api_request(
+            :post,
+            "/v1/betaGroups/#{group_id}/relationships/betaTesters",
+            body: { data: [{ type: "betaTesters", id: tester_id }] },
+            allowed: [204],
+          )
+
+          api_request(
+            :post,
+            "/v1/betaGroups/#{group_id}/relationships/builds",
+            body: { data: [{ type: "builds", id: build_id }] },
+            allowed: [204],
+          )
+
+          group_builds = api_request(
+            :get,
+            "/v1/betaGroups/#{group_id}/relationships/builds",
+          ).fetch("data", [])
+          group_testers = api_request(
+            :get,
+            "/v1/betaGroups/#{group_id}/relationships/betaTesters",
+          ).fetch("data", [])
+          abort "Build relationship verification failed." unless group_builds.any? { |item| item["id"] == build_id }
+          abort "Tester relationship verification failed." unless group_testers.any? { |item| item["id"] == tester_id }
+
+          invitation = {
+            data: {
+              type: "betaTesterInvitations",
+              relationships: {
+                betaTester: {
+                  data: { type: "betaTesters", id: tester_id },
+                },
+              },
+            },
+          }
+          api_request(
+            :post,
+            "/v1/betaTesterInvitations",
+            body: invitation,
+            allowed: [201, 409],
+          )
+
+          puts "Build #{BUILD_NUMBER} is available to the confirmed internal TestFlight tester, and the invitation was sent."
+          RUBY
