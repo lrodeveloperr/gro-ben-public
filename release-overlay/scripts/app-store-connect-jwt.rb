@@ -48,7 +48,7 @@ end
 def query_path(path, params)
   uri = URI(path)
   uri.query = URI.encode_www_form(params)
-  uri.request_uri
+  uri.to_s
 end
 
 def active_us_app_prices(document, source)
