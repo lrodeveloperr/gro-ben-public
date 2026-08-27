@@ -161,10 +161,15 @@ jobs:
           abort "Build #{BUILD_NUMBER} did not finish processing within 30 minutes." unless build
           build_id = build.fetch("id")
 
-          users = api_request(
+          team_users = api_request(
             :get,
-            query_path("/v1/users", { "filter[email]" => TESTER_EMAIL, "limit" => "10" }),
+            query_path("/v1/users", { "limit" => "200" }),
           ).fetch("data", [])
+          users = team_users.select do |user|
+            attributes = user.fetch("attributes", {})
+            identity = attributes["username"] || attributes["email"]
+            identity.to_s.casecmp?(TESTER_EMAIL)
+          end
           abort "The confirmed recipient is not an App Store Connect team user, so internal TestFlight cannot be enabled safely." if users.empty?
           user_attributes = users.first.fetch("attributes", {})
 
