@@ -190,7 +190,7 @@ jobs:
             query_path("/v1/betaGroups", { "filter[app]" => APP_ID, "limit" => "200" }),
           ).fetch("data", [])
           internal_groups = groups.select { |group| group.dig("attributes", "isInternalGroup") == true }
-          group = internal_groups.find { |item| item.dig("attributes", "name") == GROUP_NAME } || internal_groups.first
+          group = internal_groups.find { |item| item.dig("attributes", "name") == GROUP_NAME }
 
           unless group
             group = api_request(
