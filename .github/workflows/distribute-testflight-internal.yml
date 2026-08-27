@@ -201,36 +201,11 @@ jobs:
           end
           group_id = group.fetch("id")
 
-          testers = api_request(
-            :get,
-            query_path("/v1/betaTesters", { "filter[email]" => TESTER_EMAIL, "limit" => "10" }),
-          ).fetch("data", [])
-          tester = testers.first
-
-          unless tester
-            attributes = { email: TESTER_EMAIL }
-            first_name = user_attributes["firstName"].to_s.strip
-            last_name = user_attributes["lastName"].to_s.strip
-            attributes[:firstName] = first_name unless first_name.empty?
-            attributes[:lastName] = last_name unless last_name.empty?
-            tester = api_request(
-              :post,
-              "/v1/betaTesters",
-              body: {
-                data: {
-                  type: "betaTesters",
-                  attributes: attributes,
-                  relationships: {
-                    betaGroups: {
-                      data: [{ type: "betaGroups", id: group_id }],
-                    },
-                  },
-                },
-              },
-              allowed: [201],
-            ).fetch("data")
-          end
-          tester_id = tester.fetch("id")
+          # Internal beta groups accept App Store Connect team-user IDs as
+          # beta tester relationship identifiers. Creating an email-only
+          # betaTester resource produces an external tester and cannot be
+          # assigned to an internal group.
+          tester_id = users.first.fetch("id")
 
           group_testers = api_request(
             :get,
