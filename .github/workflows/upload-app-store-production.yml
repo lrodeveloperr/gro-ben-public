@@ -46,7 +46,7 @@ env:
 jobs:
   upload:
     name: Signed production iPhone build to App Store Connect
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/build-7-approved-20260827'
     runs-on: macos-26
     timeout-minutes: 90
     # Reuse the existing main-only App Store credential environment.
@@ -80,7 +80,7 @@ jobs:
           [[ "$APP_STORE_ID" == "6799562282" ]]
           [[ "$APPLE_TEAM_ID" == "49SQ3XQ68Q" ]]
           [[ "$MARKETING_VERSION" == "1.0" ]]
-          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" || "$GITHUB_REF" == "refs/heads/release/build-7-approved-20260827" ]]
 
       - name: Verify Apple credentials, app record, and unused build number
         shell: bash
