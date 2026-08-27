@@ -232,28 +232,39 @@ jobs:
           end
           tester_id = tester.fetch("id")
 
-          api_request(
-            :post,
+          group_testers = api_request(
+            :get,
             "/v1/betaGroups/#{group_id}/relationships/betaTesters",
-            body: { data: [{ type: "betaTesters", id: tester_id }] },
-            allowed: [204],
-          )
-
-          api_request(
-            :post,
-            "/v1/betaGroups/#{group_id}/relationships/builds",
-            body: { data: [{ type: "builds", id: build_id }] },
-            allowed: [204],
-          )
+          ).fetch("data", [])
+          unless group_testers.any? { |item| item["id"] == tester_id }
+            api_request(
+              :post,
+              "/v1/betaGroups/#{group_id}/relationships/betaTesters",
+              body: { data: [{ type: "betaTesters", id: tester_id }] },
+              allowed: [204],
+            )
+            group_testers = api_request(
+              :get,
+              "/v1/betaGroups/#{group_id}/relationships/betaTesters",
+            ).fetch("data", [])
+          end
 
           group_builds = api_request(
             :get,
             "/v1/betaGroups/#{group_id}/relationships/builds",
           ).fetch("data", [])
-          group_testers = api_request(
-            :get,
-            "/v1/betaGroups/#{group_id}/relationships/betaTesters",
-          ).fetch("data", [])
+          unless group_builds.any? { |item| item["id"] == build_id }
+            api_request(
+              :post,
+              "/v1/betaGroups/#{group_id}/relationships/builds",
+              body: { data: [{ type: "builds", id: build_id }] },
+              allowed: [204],
+            )
+            group_builds = api_request(
+              :get,
+              "/v1/betaGroups/#{group_id}/relationships/builds",
+            ).fetch("data", [])
+          end
           abort "Build relationship verification failed." unless group_builds.any? { |item| item["id"] == build_id }
           abort "Tester relationship verification failed." unless group_testers.any? { |item| item["id"] == tester_id }
 
